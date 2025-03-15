@@ -278,3 +278,69 @@ class TDSConvEncoder(nn.Module):
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         return self.tds_conv_blocks(inputs)  # (T, N, num_features)
+
+###################################################################################
+
+# modules.py
+import torch
+import torch.nn as nn
+from torch.nn import TransformerEncoder, TransformerEncoderLayer
+from emg2qwerty.charset import charset
+
+class PositionalEncoding(nn.Module):
+    """
+    Implements absolute sinusoidal positional encoding.
+    
+    Args:
+        d_model (int): The dimension of the embeddings.
+        dropout (float): Dropout rate.
+        max_len (int): Maximum sequence length.
+    """
+    def __init__(self, d_model, dropout=0.1, max_len=150000):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float) *
+                             (-torch.log(torch.tensor(10000.0)) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(1)  # shape: (max_len, 1, d_model)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        # x: (T, N, d_model)
+        x = x + self.pe[:x.size(0)]
+        return self.dropout(x)
+
+class TransformerCTCModel(nn.Module):
+    """
+    Transformer-based model for CTC tasks.
+    
+    Args:
+        input_dim (int): Dimensionality of input features per time step.
+        d_model (int): Embedding dimension for the Transformer.
+        num_layers (int): Number of Transformer encoder layers.
+        nhead (int): Number of attention heads.
+        num_classes (int): Number of output classes.
+        dropout (float): Dropout rate.
+    """
+    def __init__(self, input_dim, d_model, num_layers, nhead, num_classes, dropout=0.5):
+        super().__init__()
+        self.input_proj = nn.Linear(input_dim, d_model)
+        self.pos_encoder = PositionalEncoding(d_model, dropout=dropout)
+        encoder_layer = TransformerEncoderLayer(d_model=d_model, nhead=nhead, dropout=dropout)
+        self.transformer_encoder = TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.fc_out = nn.Linear(d_model, num_classes)
+        self.log_softmax = nn.LogSoftmax(dim=-1)
+
+    def forward(self, x):
+        # x: (T, N, input_dim)
+        x = self.input_proj(x)           # (T, N, d_model)
+        x = self.pos_encoder(x)          # (T, N, d_model)
+        x = self.transformer_encoder(x)  # (T, N, d_model)
+        x = self.fc_out(x)               # (T, N, num_classes)
+        return self.log_softmax(x)
+
+
+################################################################################################
